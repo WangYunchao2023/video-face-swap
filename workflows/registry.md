@@ -6,7 +6,8 @@
 
 | # | 名称 | 类型 | 路径 | 简介 | 状态 |
 |---|------|------|------|------|------|
-| 1 | 视频换脸 | CLI/ComfyUI | [`cli/video_face_swap.md`](./cli/video_face_swap.md) / [`comfyui/video_face_swap.json`](./comfyui/video_face_swap.json) | insightface inswapper 视频换脸，支持多人脸 | ✅ v2.0.0 |
+| 1 | 视频换脸 | CLI | [`cli/video_face_swap.md`](./cli/video_face_swap.md) | insightface inswapper 视频换脸，支持目标锁定/强换/多人脸 | ✅ v3.0.0 |
+| 2 | 视频换脸 | ComfyUI | [`comfyui/workflow_video_face_swap.json`](./comfyui/workflow_video_face_swap.json) | 同上，ComfyUI 节点版，单参考图 | ✅ v2.0.0 |
 
 （后续新增工作流从此处 append，格式保持统一）
 
