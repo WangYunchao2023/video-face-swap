@@ -1,0 +1,84 @@
+{
+  "3": {
+    "class_type": "VHS_LoadVideoPath",
+    "inputs": {
+      "video": "",
+      "force_rate": 0,
+      "custom_width": 0,
+      "custom_height": 0,
+      "frame_load_cap": 0,
+      "skip_first_frames": 0,
+      "select_every_nth": 1,
+      "meta_batch": null,
+      "vae": null
+    }
+  },
+  "6": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": ""
+    },
+    "_meta": {
+      "title": "源参考人脸图片"
+    }
+  },
+  "10": {
+    "class_type": "ReActorFaceSwap",
+    "inputs": {
+      "enabled": true,
+      "input_image": ["3", 0],
+      "source_image": ["6", 0],
+      "swap_model": "inswapper_128.onnx",
+      "facedetection": "retinaface_resnet50",
+      "face_restore_model": "none",
+      "face_restore_visibility": 1,
+      "codeformer_weight": 0.5,
+      "detect_gender_input": "no",
+      "detect_gender_source": "no",
+      "input_faces_index": "0",
+      "source_faces_index": "0",
+      "console_log_level": 1,
+      "face_model": null,
+      "face_boost": null
+    },
+    "_meta": {
+      "title": "ReActor 换脸"
+    }
+  },
+  "12": {
+    "class_type": "VHS_VideoCombine",
+    "inputs": {
+      "images": ["10", 0],
+      "frame_rate": 30,
+      "loop_count": 0,
+      "filename_prefix": "face_swapped",
+      "format": "video/h264-mp4",
+      "pingpong": false,
+      "save_output": true,
+      "audio": ["3", 2],
+      "meta_batch": null,
+      "vae": null
+    },
+    "_meta": {
+      "title": "视频合成"
+    }
+  },
+  "31": {
+    "class_type": "VHS_VideoInfoLoaded",
+    "inputs": {
+      "video_info": ["3", 3]
+    },
+    "_meta": {
+      "title": "视频信息"
+    }
+  },
+  "5": {
+    "class_type": "Note",
+    "inputs": {
+      "text": "📌 使用说明：\n\n1. 双击【Load Video (Path)】输入视频路径\n2. 双击【源参考人脸图片】选择参考人脸图\n3. 查看【视频信息】节点找到视频原始帧率\n4. 双击【视频合成】把 frame_rate 改为视频源帧率\n5. 点「添加到队列」运行\n\n多人脸支持：\n方案A: 串联多个 ReActorFaceSwap 节点\n(第一个换完→第二个换另一个人的脸)\n\n方案B: 使用视频换脸的CLI脚本\npython3 video_face_swap.py swap \\\n  --sources refA.jpg refB.jpg \\\n  --video input.mp4 -o output.mp4"
+    },
+    "_meta": {
+      "title": "使用说明"
+    }
+  }
+}
