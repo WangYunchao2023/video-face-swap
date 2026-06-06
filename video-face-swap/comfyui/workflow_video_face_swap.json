@@ -1,0 +1,110 @@
+{
+  "3": {
+    "class_type": "VHS_LoadVideoPath",
+    "inputs": {
+      "video": "",
+      "force_rate": 0,
+      "custom_width": 0,
+      "custom_height": 0,
+      "frame_load_cap": 0,
+      "skip_first_frames": 0,
+      "select_every_nth": 1,
+      "meta_batch": null,
+      "vae": null
+    },
+    "_meta": {
+      "title": "① 加载视频"
+    }
+  },
+  "6": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": ""
+    },
+    "_meta": {
+      "title": "② 参考人脸（换成这个人）"
+    }
+  },
+  "9": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": ""
+    },
+    "_meta": {
+      "title": "③ 目标人脸（换这个人，仅参考）"
+    }
+  },
+  "10": {
+    "class_type": "ReActorFaceSwap",
+    "inputs": {
+      "enabled": true,
+      "input_image": ["3", 0],
+      "source_image": ["6", 0],
+      "swap_model": "inswapper_128.onnx",
+      "facedetection": "retinaface_resnet50",
+      "face_restore_model": "GFPGANv1.4.pth",
+      "face_restore_visibility": 0.6,
+      "codeformer_weight": 0.5,
+      "detect_gender_input": "no",
+      "detect_gender_source": "no",
+      "input_faces_index": "0",
+      "source_faces_index": "0",
+      "console_log_level": 1,
+      "face_model": null,
+      "face_boost": ["42", 0]
+    },
+    "_meta": {
+      "title": "④ ReActor 换脸（增强模式）"
+    }
+  },
+  "12": {
+    "class_type": "VHS_VideoCombine",
+    "inputs": {
+      "images": ["10", 0],
+      "frame_rate": 30,
+      "loop_count": 0,
+      "filename_prefix": "face_swap/face_swapped",
+      "format": "video/h264-mp4",
+      "pingpong": false,
+      "save_output": true,
+      "audio": ["3", 2],
+      "meta_batch": null,
+      "vae": null
+    },
+    "_meta": {
+      "title": "⑤ 视频合成"
+    }
+  },
+  "31": {
+    "class_type": "VHS_VideoInfoLoaded",
+    "inputs": {
+      "video_info": ["3", 3]
+    },
+    "_meta": {
+      "title": "视频信息"
+    }
+  },
+  "42": {
+    "class_type": "ReActorFaceBoost",
+    "inputs": {
+      "enabled": true,
+      "boost_model": "GFPGANv1.4.pth",
+      "interpolation": "Bicubic",
+      "visibility": 1.0,
+      "codeformer_weight": 0.5,
+      "restore_with_main_after": true
+    },
+    "_meta": {
+      "title": "⑥ Face Boost（增强身份保留）"
+    }
+  },
+  "5": {
+    "class_type": "Note",
+    "inputs": {
+      "text": "📌 视频换脸工作流 v3.0 — 增强版\n\n使用步骤：\n1. ① LoadVideoPath → 指定输入视频\n2. ② 参考人脸 → 上传你想换成的人的照片\n   💡 建议提前用 CLI 预处理：\n      python3 video_face_swap.py preprocess --source ref.jpg\n   预处理后的图片放在 ref_face_optimized/final_reference.png\n3. ③ 目标人脸 → 上传视频中要替换的人的照片（仅参考用途）\n4. 查看 VideoInfo 获取源视频帧率，填入⑤的 frame_rate\n5. 添加到队列 → 运行\n\n设置说明：\n- face_restore_model: GFPGAN → 换脸后做面部修复\n- face_restore_visibility: 0.6 → 修复强度（太高会僵硬）\n- Face Boost → 额外增强身份保留度\n- face_boost.visibility: 1.0 → 增强强度\n- face_boost.restore_with_main_after: true → 用主修复模型二次修复\n\n需要模型文件：\n将 GFPGANv1.4.pth 放入 ComfyUI/models/facerestore_models/"
+    },
+    "_meta": {
+      "title": "使用说明 v3.0"
+    }
+  }
+}
