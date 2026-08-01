@@ -41,9 +41,36 @@ import cv2
 import numpy as np
 import argparse
 import time
+import numpy as np
+import cv2
+from typing import List, Tuple, Dict, Optional, Union
+from dataclasses import dataclass
 import json
 import pickle
+import os
+import sys
 from pathlib import Path
+import subprocess
+
+# 解决 529MB ONNX 模型的 protobuf arena 分配失败（RTX 5080 Blackwell 环境）
+os.environ.setdefault("PROTOBUF_PYTHON_IMPLEMENTATION", "python")
+
+# onnxruntime-gpu 需要 cudart/cudnn/cublas DLL。
+# 优先 pip 官方 nvidia-cudnn-cu12 包（新版 cudnn，对新架构支持更好），
+# 其次用 torch 捆绑的 cudnn 作为兜底。
+# 注意：若进程同时 import 了 torch，DLL 按模块名先到先得，
+# torch/lib 里捆绑的旧版 cudnn 会抢先载入并覆盖 PATH 注入，导致 ORT CUDA 推理失败。
+# 因此使用本引擎时请勿在同一进程内 import torch（GFPGAN 增强依赖 torch，
+# GPU 模式下建议关闭 --enhance）。
+_sp = os.path.join(os.path.dirname(sys.executable), "Lib", "site-packages")
+_dll_dirs = [
+    os.path.join(_sp, "nvidia", "cudnn", "bin"),
+    os.path.join(_sp, "torch", "lib"),
+]
+_dll_dirs = [d for d in _dll_dirs if os.path.isdir(d)]
+if _dll_dirs:
+    os.environ["PATH"] = os.pathsep.join(_dll_dirs) + os.pathsep + os.environ.get("PATH", "")
+
 from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass, asdict
 
@@ -68,7 +95,7 @@ class VideoFaceSwapper:
 
     def __init__(
         self,
-        det_name: str = "antelopev2",
+        det_name: str = "buffalo_l",
         det_name_inswapper: str = "buffalo_l",  # 显式指定 inswapper 对应的模型包
         det_size: Tuple[int, int] = (640, 640),
         device: str = "auto",
@@ -81,6 +108,7 @@ class VideoFaceSwapper:
         self.target_threshold = target_threshold
         self.face_restore_model = face_restore_model
         self._providers = self._resolve_providers()
+        self._inswapper_providers, self._inswapper_provider_options = self._resolve_inswapper_providers()
         self._load_models(det_name, det_name_inswapper, det_size)
         self._gfpgan = None  # lazy load
         # 缓存自适应检测的 det_size（避免重复重试）
@@ -149,14 +177,14 @@ class VideoFaceSwapper:
             log("[检测] 更换 det_size=%s (原图 %dx%d)" % (str(best_det), w, h))
             try:
                 from insightface.app import FaceAnalysis
-                new_app = FaceAnalysis(name=self._det_name, providers=self._providers)
+                new_app = FaceAnalysis(name=self._det_name, providers=self._providers, provider_options=self._provider_options)
                 new_app.prepare(ctx_id=0, det_size=best_det)
                 faces = new_app.get(img)
                 if faces:
                     self._det_size_cache[cache_key] = best_det
                     self.app = new_app
                     self._current_det_size = best_det
-                    log("[检测] ✅ det_size=%s 成功，%d 张人脸" % (str(best_det), len(faces)))
+                    log("[检测] [OK] det_size=%s 成功，%d 张人脸" % (str(best_det), len(faces)))
                     return faces
             except Exception as e:
                 log("[检测] 更换 det_size 失败: %s" % str(e))
@@ -175,7 +203,7 @@ class VideoFaceSwapper:
 
         log("[加载] 初始化 FaceAnalysis (%s)..." % det_name)
         try:
-            self.app = FaceAnalysis(name=det_name, providers=self._providers)
+            self.app = FaceAnalysis(name=det_name, providers=self._providers, provider_options=self._provider_options)
             self.app.prepare(ctx_id=0, det_size=det_size)
             log("[加载] FaceAnalysis (%s) 就绪" % det_name)
         except Exception as e:
@@ -183,7 +211,7 @@ class VideoFaceSwapper:
             if det_name != "buffalo_l":
                 log("[加载] 回退到 buffalo_l...")
                 det_name = "buffalo_l"
-                self.app = FaceAnalysis(name=det_name, providers=self._providers)
+                self.app = FaceAnalysis(name=det_name, providers=self._providers, provider_options=self._provider_options)
                 self.app.prepare(ctx_id=0, det_size=det_size)
                 log("[加载] FaceAnalysis (buffalo_l) 就绪")
             else:
@@ -212,26 +240,40 @@ class VideoFaceSwapper:
                 "找不到 inswapper_128.onnx！\n"
                 "请下载后放到 ~/.insightface/models/buffalo_l/inswapper_128.onnx"
             )
-        log("[加载] 加载 inswapper (%s, %.1f MB)..." %
-            (model_path, os.path.getsize(model_path) / 1024 / 1024))
-        sess = onnxruntime.InferenceSession(model_path, providers=self._providers)
+        log("[加载] 加载 inswapper (%s, %.1f MB, providers=%s)..." %
+            (model_path, os.path.getsize(model_path) / 1024 / 1024, self._inswapper_providers))
+        sess = onnxruntime.InferenceSession(model_path, providers=self._inswapper_providers, provider_options=self._inswapper_provider_options)
         self.swapper = INSwapper(model_file=model_path, session=sess)
         log("[加载] inswapper 就绪 (输入尺寸 %s, 模型包=%s)" % (str(self.swapper.input_size), det_name_inswapper))
 
     def _resolve_providers(self) -> List:
-        """选择 ONNX Runtime provider"""
-        if self.device == "cuda":
-            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        elif self.device == "cpu":
-            return ["CPUExecutionProvider"]
-        else:
-            try:
-                import onnxruntime as ort
-                if "CUDAExecutionProvider" in ort.get_available_providers():
-                    return ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            except:
-                pass
-            return ["CPUExecutionProvider"]
+        """选择 ONNX Runtime provider（检测/识别模型），CUDA 优先（NVIDIA 显卡），回退 DML/CPU"""
+        import onnxruntime as ort
+        try:
+            avail = ort.get_available_providers()
+            if "CUDAExecutionProvider" in avail:
+                self._provider_options = [{}, {}]
+                return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            if "DmlExecutionProvider" in avail:
+                self._provider_options = [{}, {}]
+                return ["DmlExecutionProvider", "CPUExecutionProvider"]
+        except:
+            pass
+        self._provider_options = [{}]
+        return ["CPUExecutionProvider"]
+
+    def _resolve_inswapper_providers(self) -> Tuple[List, List]:
+        """选择 inswapper 的 provider，CUDA 优先（NVIDIA 显卡），回退 DirectML/CPU"""
+        import onnxruntime as ort
+        try:
+            avail = ort.get_available_providers()
+            if "CUDAExecutionProvider" in avail:
+                return (["CUDAExecutionProvider", "CPUExecutionProvider"], [{"cudnn_conv_algo_search": "EXHAUSTIVE"}, {}])
+            if "DmlExecutionProvider" in avail:
+                return (["DmlExecutionProvider", "CPUExecutionProvider"], [{}, {}])
+        except:
+            pass
+        return (["CPUExecutionProvider"], [{}])
 
     def _load_gfpgan(self):
         """懒加载 GFPGAN（轻量封装，无需 facexlib 检测模型）"""
@@ -395,7 +437,7 @@ class VideoFaceSwapper:
             quality_score=float(quality),
             enhancement_applied=enhancement_applied,
         )
-        log("[预处理] ✅ 完成! (角度: %.1f° → 对齐, 增强: %s, 评分: %.2f)" %
+        log("[预处理] [OK] 完成! (角度: %.1f° → 对齐, 增强: %s, 评分: %.2f)" %
             (yaw_deg, "是" if enhancement_applied else "否", quality))
 
         # 5. 保存最终参考图 — 原始分辨率裁剪版（供换脸时直接检测使用）
@@ -497,7 +539,7 @@ class VideoFaceSwapper:
             raise FileNotFoundError("预处理目录中未找到 face_embedding.npy")
 
         saved_embedding = np.load(emb_path)  # 已经归一化的向量 norm≈1.0
-        log("[加载] ✅ 加载预处理嵌入: %s (norm=%.4f)" %
+        log("[加载] [OK] 加载预处理嵌入: %s (norm=%.4f)" %
             (emb_path, np.linalg.norm(saved_embedding)))
 
         def _detect_and_override(img, label):
@@ -509,7 +551,7 @@ class VideoFaceSwapper:
             cos_sim = float(np.dot(original_normed, saved_embedding))
             face.embedding = saved_embedding.copy()
             # 验证 normed_embedding 已更新
-            log("[加载] ✅ %s: 检测 score=%.3f, 覆盖后 normed_embedding norm=%.4f" %
+            log("[加载] [OK] %s: 检测 score=%.3f, 覆盖后 normed_embedding norm=%.4f" %
                 (label, face.det_score, np.linalg.norm(face.normed_embedding)))
             log("[加载]    与原检测嵌入 cosine=%.4f" % cos_sim)
             return face
@@ -783,6 +825,10 @@ class VideoFaceSwapper:
 
         cap.release()
         out.release()
+
+        # 复制音频轨道
+        _copy_audio_to_output(video_path, output_path)
+
         elapsed = time.time() - t0
 
         log("[完成] %d帧 | %d换脸 | %d无脸 | %d跳过 | %.0fs" %
@@ -876,14 +922,83 @@ class VideoFaceSwapper:
 
         cap.release()
         out.release()
+
+        # 复制音频轨道
+        _copy_audio_to_output(video_path, output_path)
+
         log("[增强] 完成: %s" % output_path)
         return output_path
 
 
+# ─── 音频复制 ─────────────────────────────────────────────────
+
+def _copy_audio_to_output(input_video: str, output_video: str):
+    """用 ffmpeg 把源视频的音频轨道复制到输出视频（源无音频则跳过）"""
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe
+        ffmpeg_path = get_ffmpeg_exe()
+
+        # 快速探测输入是否有音频
+        probe = subprocess.run(
+            [ffmpeg_path, "-i", input_video],
+            capture_output=True, text=True
+        )
+        if "Audio:" not in probe.stderr:
+            return
+
+        tmp = output_video + ".audio_tmp.mp4"
+        subprocess.run(
+            [ffmpeg_path, "-y",
+             "-i", output_video,
+             "-i", input_video,
+             "-c:v", "copy",
+             "-c:a", "aac",
+             "-map", "0:v:0",
+             "-map", "1:a:0?",
+             "-shortest",
+             tmp],
+            capture_output=True, check=True
+        )
+        os.replace(tmp, output_video)
+        log("[音频] [OK] 已添加音频轨道")
+    except Exception as e:
+        log("[音频] ⚠️ 添加音频失败: %s" % e)
+
+
+def _reencode_h264(input_video: str, crf: int = 18):
+    """把视频重编码为 H.264 高画质（crf 越小越清晰，文件越大）。
+    OpenCV 的 mp4v 编码器压缩效率低、容易出块状噪点，
+    ffmpeg libx264 + 合理 crf 是画质与体积的最佳平衡。"""
+    try:
+        from imageio_ffmpeg import get_ffmpeg_exe
+        ffmpeg_path = get_ffmpeg_exe()
+        tmp = input_video + ".h264_tmp.mp4"
+        subprocess.run(
+            [ffmpeg_path, "-y",
+             "-i", input_video,
+             "-c:v", "libx264",
+             "-crf", str(crf),
+             "-preset", "medium",
+             "-pix_fmt", "yuv420p",
+             "-c:a", "copy",
+             "-movflags", "+faststart",
+             tmp],
+            capture_output=True, check=True
+        )
+        os.replace(tmp, input_video)
+        log("[编码] [OK] 已重编码为 H.264 (crf=%d)" % crf)
+    except Exception as e:
+        log("[编码] ⚠️ H.264 重编码失败，保留原编码: %s" % e)
+
 # ─── 工具函数 ─────────────────────────────────────────────────
 
 def log(msg: str):
-    print("[视频换脸] %s" % msg)
+    # Windows GBK 控制台打不出 ⚠️ 等字符，编码兜底避免整个进程崩溃
+    try:
+        print("[视频换脸] %s" % msg)
+    except UnicodeEncodeError:
+        safe = msg.encode("gbk", "replace").decode("gbk")
+        print("[视频换脸] %s" % safe)
     sys.stdout.flush()
 
 
@@ -973,6 +1088,8 @@ def main():
                     help="计算设备 (default: auto)")
     sp.add_argument("--det-size", type=int, default=0,
                     help="手动指定检测尺寸 (如 320)，0=自适应 (default: 0)")
+    sp.add_argument("--crf", type=int, default=16,
+                    help="H.264 编码质量 0-51 (默认 16，越小越清晰、文件越大; 设 0 跳过重编码)")
 
     # ── enhance ───────────────────────────────────────────────
     eh = subparsers.add_parser("enhance", help="对视频做面部修复增强")
@@ -1004,7 +1121,7 @@ def main():
             enhance=(not args.no_enhance),
             align=(not args.no_align),
         )
-        print("\n✅ 预处理完成!")
+        print("\n[OK] 预处理完成!")
         print("   对齐图: ", result.aligned_face_path)
         print("   增强图: ", result.enhanced_path or "无")
         print("   嵌入:   ", result.embedding_path)
@@ -1057,7 +1174,7 @@ def main():
                 reference_image=args.source,
                 preprocess_dir=preprocess_dir,
             )
-            log("[流程] 参考人脸加载完成 ✅ (嵌入来自预处理)")
+            log("[流程] 参考人脸加载完成 [OK] (嵌入来自预处理)")
 
         elif preprocess_dir and os.path.isdir(preprocess_dir):
             # 使用已预处理的目录
@@ -1066,7 +1183,7 @@ def main():
                 reference_image=args.source,
                 preprocess_dir=preprocess_dir,
             )
-            log("[流程] 参考人脸加载完成 ✅ (嵌入来自预处理)")
+            log("[流程] 参考人脸加载完成 [OK] (嵌入来自预处理)")
 
         else:
             # 直接从原始参考图加载
@@ -1116,7 +1233,11 @@ def main():
             )
             final_output = enhanced_output
 
-        print("\n✅ 换脸完成!")
+        # H.264 高画质重编码（--crf 0 可跳过）
+        if args.crf > 0:
+            _reencode_h264(final_output, crf=args.crf)
+
+        print("\n[OK] 换脸完成!")
         print("   输出: %s" % final_output)
         return
 
