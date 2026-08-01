@@ -644,6 +644,32 @@ class VideoFaceSwapSkill:
             'video_info': video_info
         }
     
+    def _get_quality_settings(self, quality: str) -> Dict[str, Any]:
+        """根据质量档位返回对应的参数设置"""
+        settings = {
+            "draft": {
+                "det_size": (320, 320),
+                "upsample": 1,
+                "description": "草稿模式 — 最快速度"
+            },
+            "normal": {
+                "det_size": (640, 640),
+                "upsample": 1,
+                "description": "标准模式 — 均衡质量与速度"
+            },
+            "hq": {
+                "det_size": (640, 640),
+                "upsample": 2,
+                "description": "高质量 — 更清晰的面部细节"
+            },
+            "best": {
+                "det_size": (1280, 1280),
+                "upsample": 2,
+                "description": "最佳质量 — 最慢速度"
+            }
+        }
+        return settings.get(quality, settings["normal"])
+
     def _get_default_params(self) -> Dict[str, Any]:
         """返回默认参数"""
         return {

@@ -68,7 +68,7 @@ class VideoFaceSwapper:
 
     def __init__(
         self,
-        det_name: str = "antelopev2",
+        det_name: str = "buffalo_l",
         det_name_inswapper: str = "buffalo_l",  # 显式指定 inswapper 对应的模型包
         det_size: Tuple[int, int] = (640, 640),
         device: str = "auto",
